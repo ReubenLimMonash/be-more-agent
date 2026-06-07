@@ -65,14 +65,15 @@ pip install --upgrade pip
 pip install --force-reinstall --no-cache-dir sounddevice
 pip install -r requirements.txt
 
-# 6. Pull AI Models
-echo -e "${YELLOW}[6/6] Checking AI Models...${NC}"
-if command -v ollama &> /dev/null; then
-    ollama pull gemma3:1b
-    ollama pull moondream
-else
-    echo -e "${RED}❌ Ollama not found. Please install it manually.${NC}"
-fi
+# NOTE: Commented out as I will be using Ollama Cloud
+# 6. Pull AI Models 
+# echo -e "${YELLOW}[6/6] Checking AI Models...${NC}"
+# if command -v ollama &> /dev/null; then
+#     ollama pull gemma3:1b
+#     ollama pull moondream
+# else
+#     echo -e "${RED}❌ Ollama not found. Please install it manually.${NC}"
+# fi
 
 # 7. OpenWakeWord Model (Added this back so the user has a default)
 if [ ! -f "wakeword.onnx" ]; then

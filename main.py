@@ -25,179 +25,28 @@ import sys
 import select
 import traceback
 import atexit
-import datetime
 import warnings
 import wave
-import struct 
+import numpy as np
+import scipy.signal
+import sounddevice as sd
 
-# Suppress harmless library warnings
+# Suppress warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
 
-# Core dependencies
-import sounddevice as sd
-import numpy as np
-import scipy.signal 
-
-# --- AI ENGINES ---
+# Wake word
 import openwakeword
 from openwakeword.model import Model
-import ollama 
 
-# --- WEB SEARCH (Using your working import) ---
-from duckduckgo_search import DDGS 
+# BMO Agent & Config
+from config import (
+    CONFIG_FILE, MEMORY_FILE, BMO_IMAGE_FILE, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD,
+    BotStates, SOUND_DIRS, CURRENT_CONFIG, TEXT_MODEL, VISION_MODEL,
+    INPUT_DEVICE_NAME, choose_input_samplerate, BMO_SYSTEM_PROMPT
+)
+from bridge import AgentBridge 
 
-# =========================================================================
-# 1. CONFIGURATION & CONSTANTS
-# =========================================================================
-
-CONFIG_FILE = "config.json"
-MEMORY_FILE = "memory.json"
-BMO_IMAGE_FILE = "current_image.jpg"
-WAKE_WORD_MODEL = "./wakeword.onnx"
-WAKE_WORD_THRESHOLD = 0.5
-
-# HARDWARE SETTINGS
-INPUT_DEVICE_NAME = None
-
-DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": True,
-    "camera_rotation": 0,
-    "system_prompt_extras": "",
-    "input_device": None,
-    "input_sample_rate": None
-}
-
-# LLM SETTINGS
-OLLAMA_OPTIONS = {
-    'keep_alive': '-1',     
-    'num_thread': 4,
-    'temperature': 0.7,     
-    'top_k': 40,
-    'top_p': 0.9
-}
-
-def load_config():
-    config = DEFAULT_CONFIG.copy()
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                user_config = json.load(f)
-                config.update(user_config)
-        except Exception as e:
-            print(f"Config Error: {e}. Using defaults.")
-    return config
-
-CURRENT_CONFIG = load_config()
-TEXT_MODEL = CURRENT_CONFIG["text_model"]
-VISION_MODEL = CURRENT_CONFIG["vision_model"]
-
-def resolve_input_device(config):
-    requested = config.get("input_device")
-    if requested in (None, "", "default"):
-        return None
-
-    try:
-        devices = sd.query_devices()
-    except Exception as e:
-        print(f"[AUDIO] Device query failed: {e}", flush=True)
-        return None
-
-    if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
-        index = int(requested)
-        if 0 <= index < len(devices):
-            return index
-        print(f"[AUDIO] Input device index not found: {index}", flush=True)
-        return None
-
-    requested_lower = str(requested).lower()
-    for idx, dev in enumerate(devices):
-        print(f"[AUDIO DEBUG] Index {idx}: {dev.get('name')} (In: {dev.get('max_input_channels')})", flush=True) # DEBUG LINE
-        if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
-            return idx
-
-    print(f"[AUDIO] Input device name not found: {requested}", flush=True)
-    return None
-
-INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
-if INPUT_DEVICE_NAME is not None:
-    try:
-        device_info = sd.query_devices(INPUT_DEVICE_NAME)
-        print(f"[AUDIO] Using input device: {device_info.get('name', INPUT_DEVICE_NAME)}", flush=True)
-    except Exception:
-        print(f"[AUDIO] Using input device index: {INPUT_DEVICE_NAME}", flush=True)
-
-def choose_input_samplerate(device, preferred=None):
-    candidates = []
-    if preferred:
-        candidates.append(preferred)
-    try:
-        device_info = sd.query_devices(device)
-        print(f"[AUDIO DEBUG] Device Info: {device_info}", flush=True) # DEBUG
-        if "default_samplerate" in device_info:
-            candidates.append(int(device_info["default_samplerate"]))
-    except Exception as e:
-        print(f"[AUDIO DEBUG] Query failed: {e}", flush=True)
-        pass
-
-    candidates.extend([48000, 44100, 32000, 16000])
-    seen = set()
-    for rate in candidates:
-        if not rate or rate in seen:
-            continue
-        seen.add(rate)
-        try:
-            sd.check_input_settings(device=device, samplerate=rate, channels=1, dtype="int16")
-            return rate
-        except Exception:
-            continue
-
-    return int(candidates[0]) if candidates else 44100
-
-class BotStates:
-    IDLE = "idle"             
-    LISTENING = "listening"   
-    THINKING = "thinking"     
-    SPEAKING = "speaking"     
-    ERROR = "error"           
-    CAPTURING = "capturing" 
-    WARMUP = "warmup"       
-
-# --- SYSTEM PROMPT ---
-BASE_SYSTEM_PROMPT = """You are a helpful robot assistant running on a Raspberry Pi.
-Personality: Cute, helpful, robot.
-Style: Short sentences. Enthusiastic.
-
-INSTRUCTIONS:
-- If the user asks for a physical action (time, search, photo), output JSON.
-- If the user just wants to chat, reply with NORMAL TEXT.
-
-### EXAMPLES ###
-
-User: What time is it?
-You: {"action": "get_time", "value": "now"}
-
-User: Hello!
-You: Hi! I am ready to help!
-
-User: Search for news about robots.
-You: {"action": "search_web", "value": "robots news"}
-
-User: What do you see right now?
-You: {"action": "capture_image", "value": "environment"}
-
-### END EXAMPLES ###
-"""
-
-SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + "\n\n" + CURRENT_CONFIG.get("system_prompt_extras", "")
-
-# Sound Directories
-greeting_sounds_dir = "sounds/greeting_sounds"
-ack_sounds_dir = "sounds/ack_sounds"
-thinking_sounds_dir = "sounds/thinking_sounds"
-error_sounds_dir = "sounds/error_sounds"
+# All configuration now imported from config.py
 
 # =========================================================================
 # 2. GUI CLASS
@@ -217,6 +66,12 @@ class BotGUI:
         master.bind('<Return>', self.handle_ptt_toggle)
         master.bind('<space>', self.handle_speaking_interrupt)
         atexit.register(self.safe_exit)
+        
+        # --- PYDANTIC AI AGENT INITIALIZATION ---
+        self.agent_bridge = AgentBridge(
+            on_thinking=self._on_agent_thinking,
+            on_response=self._on_agent_response
+        )
         
         # State
         self.current_state = BotStates.WARMUP
@@ -290,11 +145,33 @@ class BotGUI:
             return None
         except: return None
 
+    def _on_agent_thinking(self):
+        """Callback when agent starts thinking."""
+        self.set_state(BotStates.THINKING, "Thinking...")
+        self.thinking_sound_active.set()
+        threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
+    
+    def _on_agent_response(self, text: str, tool_name: str = None):
+        """Callback when agent has response."""
+        self.thinking_sound_active.clear()
+        if tool_name:
+            self.append_to_text(f"BOT: (using {tool_name}) {text}")
+        else:
+            self.append_to_text(f"BOT: {text}")
+        # Queue for TTS
+        with self.tts_queue_lock:
+            self.tts_queue.append(text)
+
     def safe_exit(self):
         if self.exiting:
             return
         self.exiting = True
         print("\n--- SHUTDOWN SEQUENCE ---", flush=True)
+        
+        # Shutdown agent bridge
+        if hasattr(self, 'agent_bridge'):
+            self.agent_bridge.shutdown()
+        
         if self.current_audio_process:
             try:
                 self.current_audio_process.terminate()
@@ -308,7 +185,8 @@ class BotGUI:
         self.save_chat_history()
         
         try:
-            ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
+            # No need to call ollama.generate for keep_alive with Pydantic AI
+            pass
         except: pass
         try:
             sd.stop()
@@ -439,79 +317,7 @@ class BotGUI:
         self.master.after(0, update_text_stream)
 
     # =========================================================================
-    # 3. ACTION ROUTER
-    # =========================================================================
-    
-    def execute_action_and_get_result(self, action_data):
-        raw_action = action_data.get("action", "").lower().strip()
-        value = action_data.get("value") or action_data.get("query")
-        
-        VALID_TOOLS = {
-            "get_time", "search_web", "capture_image"
-        }
-        
-        ALIASES = {
-            "google": "search_web", "browser": "search_web", "news": "search_web",         
-            "search_news": "search_web", "look": "capture_image", "see": "capture_image", 
-            "check_time": "get_time"
-        }
-
-        action = ALIASES.get(raw_action, raw_action)
-        print(f"ACTION: {raw_action} -> {action}", flush=True)
-
-        if action not in VALID_TOOLS:
-            if value and isinstance(value, str) and len(value.split()) > 1:
-                return f"CHAT_FALLBACK::{value}"
-            return "INVALID_ACTION"
-
-        if action == "get_time":
-            now = datetime.datetime.now().strftime("%I:%M %p")
-            return f"The current time is {now}."
-        
-        elif action == "search_web":
-            print(f"Searching web for: {value}...", flush=True)
-            try:
-                # 'us-en' region is often more stable for CLI queries
-                with DDGS() as ddgs:
-                    results = []
-                    # 1. News search
-                    try:
-                        results = list(ddgs.news(value, region='us-en', max_results=1))
-                        if results: 
-                            print(f"[DEBUG] Found News: {results[0].get('title')}", flush=True)
-                    except Exception as e: 
-                        print(f"[DEBUG] News Search Error: {e}", flush=True)
-                    
-                    # 2. Text fallback
-                    if not results:
-                        print("[DEBUG] No news found, trying text search...", flush=True)
-                        try: 
-                            results = list(ddgs.text(value, region='us-en', max_results=1))
-                            if results: 
-                                print(f"[DEBUG] Found Text: {results[0].get('title')}", flush=True)
-                        except Exception as e:
-                             print(f"[DEBUG] Text Search Error: {e}", flush=True)
-
-                    if results:
-                        r = results[0]
-                        # Safe get
-                        title = r.get('title', 'No Title')
-                        body = r.get('body', r.get('snippet', 'No Body'))
-                        return f"SEARCH RESULTS for '{value}':\nTitle: {title}\nSnippet: {body[:300]}"
-                    else: 
-                        print(f"[DEBUG] Search returned 0 results.", flush=True)
-                        return "SEARCH_EMPTY"
-            except Exception as e:
-                print(f"[DEBUG] Connection/Library Error: {e}", flush=True)
-                return "SEARCH_ERROR"
-        
-        elif action == "capture_image":
-             return "IMAGE_CAPTURE_TRIGGERED"
-
-        return None
-
-    # =========================================================================
-    # 4. CORE LOGIC
+    # 3. CORE LOGIC - Agent-based (Pydantic AI)
     # =========================================================================
 
     def safe_main_execution(self):
@@ -556,11 +362,12 @@ class BotGUI:
     def warm_up_logic(self):
         self.set_state(BotStates.WARMUP, "Warming up brains...")
         try:
-            ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=-1)
+            # Agent will load models on first use
+            pass
         except Exception as e:
-            print(f"Failed to load {TEXT_MODEL}: {e}", flush=True)
-        self.play_sound(self.get_random_sound(greeting_sounds_dir))
-        print("Models loaded.", flush=True)
+            print(f"Failed to initialize: {e}", flush=True)
+        self.play_sound(self.get_random_sound(SOUND_DIRS["greeting"]))
+        print("Ready to serve!", flush=True)
 
     def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
@@ -768,7 +575,7 @@ class BotGUI:
             wf.setsampwidth(2)
             wf.setframerate(samplerate)
             wf.writeframes(audio_data.tobytes())
-        self.play_sound(self.get_random_sound(ack_sounds_dir))
+        self.play_sound(self.get_random_sound(SOUND_DIRS["ack_sounds"]))
         return filename
 
     def transcribe_audio(self, filename):
@@ -805,142 +612,29 @@ class BotGUI:
             return None
 
     # =========================================================================
-    # 5. CHAT & RESPOND
+    # 5. CHAT & RESPOND (via Pydantic AI Agent)
     # =========================================================================
 
     def chat_and_respond(self, text, img_path=None):
         if "forget everything" in text.lower() or "reset memory" in text.lower():
             self.session_memory = []
-            self.permanent_memory = [{"role": "system", "content": SYSTEM_PROMPT}]
+            self.permanent_memory = [{"role": "system", "content": BMO_SYSTEM_PROMPT}]
             self.save_chat_history()
-            with self.tts_queue_lock: 
+            with self.tts_queue_lock:
                 self.tts_queue.append("Okay. Memory wiped.")
             self.set_state(BotStates.IDLE, "Memory Wiped")
             return
 
-        model_to_use = VISION_MODEL if img_path else TEXT_MODEL
-        self.set_state(BotStates.THINKING, "Thinking...", cam_path=img_path)
+        # Use Pydantic AI agent via bridge
+        response = self.agent_bridge.run_agent(text)
         
-        messages = []
-        if img_path:
-            messages = [{"role": "user", "content": text, "images": [img_path]}]
-        else:
-            user_msg = {"role": "user", "content": text}
-            messages = self.permanent_memory + self.session_memory + [user_msg]
+        # Add to memory
+        if response.success:
+            self.session_memory.append({"role": "user", "content": text})
+            self.session_memory.append({"role": "assistant", "content": response.text})
         
-        self.thinking_sound_active.set()
-        threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
-        
-        full_response_buffer = ""
-        sentence_buffer = "" 
-        
-        try:
-            stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=OLLAMA_OPTIONS)
-            
-            is_action_mode = False
-            
-            for chunk in stream:
-                if self.interrupted.is_set(): break 
-                content = chunk['message']['content']
-                full_response_buffer += content
-                
-                if '{"' in content or "action:" in content.lower():
-                    is_action_mode = True
-                    self.thinking_sound_active.clear()
-                    continue 
-
-                if is_action_mode: continue
-
-                self.thinking_sound_active.clear()
-                if self.current_state != BotStates.SPEAKING:
-                    self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                    self.append_to_text("BOT: ", newline=False)
-
-                self._stream_to_text(content)
-                
-                sentence_buffer += content
-                if any(punct in content for punct in ".!?\n"):
-                    clean_sentence = sentence_buffer.strip()
-                    if clean_sentence and re.search(r'[a-zA-Z0-9]', clean_sentence):
-                        with self.tts_queue_lock: self.tts_queue.append(clean_sentence)
-                    sentence_buffer = ""
-
-            if is_action_mode:
-                action_data = self.extract_json_from_text(full_response_buffer)
-                if action_data:
-                    tool_result = self.execute_action_and_get_result(action_data)
-
-                    if tool_result and tool_result.startswith("CHAT_FALLBACK::"):
-                        chat_text = tool_result.split("::", 1)[1]
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(chat_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(chat_text)
-                        self.session_memory.append({"role": "assistant", "content": chat_text})
-                        self.wait_for_tts()
-                        self.set_state(BotStates.IDLE, "Ready")
-                        return
-
-                    if tool_result == "IMAGE_CAPTURE_TRIGGERED":
-                        new_img_path = self.capture_image()
-                        if new_img_path:
-                            self.chat_and_respond(text, img_path=new_img_path)
-                            return 
-
-                    elif tool_result == "INVALID_ACTION":
-                        fallback_text = "I am not sure how to do that."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
-
-                    elif tool_result == "SEARCH_EMPTY":
-                        fallback_text = "I searched, but I couldn't find any news about that."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
-
-                    elif tool_result == "SEARCH_ERROR":
-                        fallback_text = "I cannot reach the internet right now."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
-
-                    elif tool_result:
-                        summary_prompt = [
-                            {"role": "system", "content": "Summarize this result in one short sentence."},
-                            {"role": "user", "content": f"RESULT: {tool_result}\nUser Question: {text}"}
-                        ]
-                        
-                        self.set_state(BotStates.THINKING, "Reading...")
-                        self.thinking_sound_active.set()
-                        
-                        final_resp = ollama.chat(model=model_to_use, messages=summary_prompt, stream=False, options=OLLAMA_OPTIONS)
-                        final_text = final_resp['message']['content']
-                        
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(final_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(final_text)
-                        self.session_memory.append({"role": "assistant", "content": final_text})
-            else:
-                self.append_to_text("")
-                self.session_memory.append({"role": "assistant", "content": full_response_buffer}) 
-            
-            self.wait_for_tts()
-            self.set_state(BotStates.IDLE, "Ready")
-                
-        except Exception as e:
-            print(f"LLM Error: {e}")
-            self.set_state(BotStates.ERROR, "Brain Freeze!")
+        self.wait_for_tts()
+        self.set_state(BotStates.IDLE, "Ready")
 
     def wait_for_tts(self):
         while self.tts_queue or self.tts_active.is_set():
@@ -1022,7 +716,7 @@ class BotGUI:
     def _run_thinking_sound_loop(self):
         time.sleep(0.5)
         while self.thinking_sound_active.is_set():
-            sound = self.get_random_sound(thinking_sounds_dir)
+            sound = self.get_random_sound(SOUND_DIRS["thinking"])
             if sound: self.play_sound(sound)
             for _ in range(50):
                 if not self.thinking_sound_active.is_set(): return
@@ -1065,7 +759,7 @@ class BotGUI:
             try:
                 with open(MEMORY_FILE, "r") as f: return json.load(f)
             except: pass
-        return [{"role": "system", "content": SYSTEM_PROMPT}]
+        return [{"role": "system", "content": BMO_SYSTEM_PROMPT}]
 
     def save_chat_history(self):
         full = self.permanent_memory + self.session_memory

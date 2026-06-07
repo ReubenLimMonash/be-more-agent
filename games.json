@@ -1,0 +1,16 @@
+{
+  "custom": [
+    {
+      "name": "My Custom Game 1",
+      "platform": "custom",
+      "launch_command": "/path/to/game1.sh",
+      "description": "A custom game"
+    },
+    {
+      "name": "Another Game",
+      "platform": "web",
+      "launch_command": "firefox https://example.com/game",
+      "description": "A web-based game"
+    }
+  ]
+}
