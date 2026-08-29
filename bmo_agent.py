@@ -7,13 +7,15 @@ import logging
 from typing import Optional
 from dataclasses import dataclass
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.groq import GroqModel
+from pydantic_ai.providers.groq import GroqProvider
 from pydantic import BaseModel, Field
 
 # Import tools
 from tools.games import launch_game, list_games, get_game_info
 from tools.system import get_time, search_web, capture_image
 
-from config import BMO_SYSTEM_PROMPT, OLLAMA_BASE_URL, TEXT_MODEL
+from config import BMO_SYSTEM_PROMPT, GROQ_API_KEY, TEXT_MODEL
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -52,8 +54,7 @@ class BMOResponse(BaseModel):
 
 # Create the Pydantic AI agent
 bmo_agent = Agent(
-    model=f"ollama:{TEXT_MODEL}",
-    base_url=OLLAMA_BASE_URL,  # For Ollama Cloud, use remote URL
+    model=GroqModel(TEXT_MODEL, provider=GroqProvider(api_key=GROQ_API_KEY)),
     deps_type=BMODeps,
     output_type=BMOResponse,
     system_prompt=BMO_SYSTEM_PROMPT,

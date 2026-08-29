@@ -58,13 +58,14 @@ class BotGUI:
 
     def __init__(self, master):
         self.master = master
-        master.title("Pi Assistant")
+        master.title("BMO")
         master.attributes('-fullscreen', True) 
         master.bind('<Escape>', self.exit_fullscreen)
         
         # Inputs
         master.bind('<Return>', self.handle_ptt_toggle)
         master.bind('<space>', self.handle_speaking_interrupt)
+        master.bind('<Tab>', self.toggle_chatbox)
         atexit.register(self.safe_exit)
         
         # --- PYDANTIC AI AGENT INITIALIZATION ---
@@ -88,6 +89,7 @@ class BotGUI:
         self.ptt_event = threading.Event()       
         self.recording_active = threading.Event() 
         self.interrupted = threading.Event() 
+        self.chat_mode = threading.Event()
         
         self.tts_queue = []          
         self.tts_queue_lock = threading.Lock() 
@@ -122,8 +124,14 @@ class BotGUI:
         self.overlay_label = tk.Label(master, bg='black')
         self.overlay_label.bind('<Button-1>', self.toggle_hud_visibility)
         
-        self.response_text = tk.Text(master, height=6, width=60, wrap=tk.WORD, 
+        # Chatbox overlay (Tab-toggled): conversation log + typed input, bottom half of screen
+        self.chat_frame = tk.Frame(master, bg="#000000")
+        self.response_text = tk.Text(self.chat_frame, height=6, width=60, wrap=tk.WORD, 
                                      state=tk.DISABLED, bg="#ffffff", fg="#000000", font=('Arial', 12)) 
+        self.response_text.pack(fill=tk.BOTH, expand=True)
+        self.chat_entry = tk.Entry(self.chat_frame, font=('Arial', 12))
+        self.chat_entry.pack(fill=tk.X)
+        self.chat_entry.bind('<Return>', self.handle_chat_submit)
         
         self.status_var = tk.StringVar(value="Initializing...")
         self.status_label = ttk.Label(master, textvariable=self.status_var, background="#2e2e2e", foreground="white")
@@ -203,17 +211,17 @@ class BotGUI:
 
     def toggle_hud_visibility(self, event=None):
         try:
-            if self.response_text.winfo_ismapped():
-                self.response_text.place_forget()
+            if self.status_label.winfo_ismapped():
                 self.status_label.place_forget()
                 self.exit_button.place_forget()
             else:
-                self.response_text.place(relx=0.5, rely=0.82, anchor=tk.S)
                 self.status_label.place(relx=0.5, rely=1.0, anchor=tk.S, relwidth=1)
                 self.exit_button.place(x=10, y=10)
         except tk.TclError: pass
 
     def handle_ptt_toggle(self, event=None):
+        if self.chat_mode.is_set():
+            return
         current_time = time.time()
         if current_time - self.last_ptt_time < 0.5: 
             return 
@@ -229,6 +237,8 @@ class BotGUI:
                 self.ptt_event.set()
 
     def handle_speaking_interrupt(self, event=None):
+        if self.master.focus_get() == self.chat_entry:
+            return
         if self.current_state == BotStates.SPEAKING or self.current_state == BotStates.THINKING:
             self.interrupted.set()
             self.thinking_sound_active.clear()
@@ -238,6 +248,31 @@ class BotGUI:
                 try: self.current_audio_process.terminate()
                 except: pass
             self.set_state(BotStates.IDLE, "Interrupted.")
+
+    def toggle_chatbox(self, event=None):
+        if self.chat_frame.winfo_ismapped():
+            self.chat_frame.place_forget()
+            self.chat_mode.clear()
+            self.master.focus_set()
+        else:
+            self.chat_frame.place(relx=0, rely=0.5, relwidth=1, relheight=0.5)
+            self.chat_mode.set()
+            self.chat_entry.focus_set()
+        return "break"
+
+    def handle_chat_submit(self, event=None):
+        text = self.chat_entry.get().strip()
+        if not text or self.current_state in (BotStates.THINKING, BotStates.SPEAKING):
+            return "break"
+        self.chat_entry.delete(0, tk.END)
+        self.append_to_text(f"YOU: {text}")
+        self.chat_entry.config(state=tk.DISABLED)
+        threading.Thread(target=self._process_chat_message, args=(text,), daemon=True).start()
+        return "break"
+
+    def _process_chat_message(self, text):
+        self.chat_and_respond(text)
+        self.master.after(0, lambda: self.chat_entry.config(state=tk.NORMAL))
 
     def load_animations(self):
         base_path = "faces"
@@ -329,6 +364,10 @@ class BotGUI:
             
             while True:
                 trigger_source = self.detect_wake_word_or_ptt()
+                if trigger_source == "PAUSED":
+                    while self.chat_mode.is_set():
+                        time.sleep(0.1)
+                    continue
                 if self.interrupted.is_set():
                     self.interrupted.clear()
                     self.set_state(BotStates.IDLE, "Resetting...")
@@ -437,6 +476,8 @@ class BotGUI:
                 # If blocksize is 0, we read what is available.
                 
                 while True:
+                    if self.chat_mode.is_set():
+                        raise StopIteration("PAUSED")
                     if self.ptt_event.is_set():
                         self.ptt_event.clear()
                         raise StopIteration("PTT")

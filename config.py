@@ -20,6 +20,7 @@ GAMES_LIST_FILE = "games.json"  # Custom games database
 BMO_IMAGE_FILE = "current_image.jpg"
 WAKE_WORD_MODEL = "./wakeword.onnx"
 RETROPIE_CONFIG_PATH = "/opt/retropie/configs"  # RetroPie config location
+GROQ_API_KEY = "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"
 
 # =========================================================================
 # WAKE WORD & AUDIO
@@ -33,7 +34,7 @@ INPUT_DEVICE_NAME = None
 # =========================================================================
 
 DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
+    "text_model": "qwen/qwen3.8-27b",
     # "vision_model": "moondream", # TODO: Add vision model when camera features are implemented
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": True,
@@ -41,19 +42,6 @@ DEFAULT_CONFIG = {
     "system_prompt_extras": "",
     "input_device": None,
     "input_sample_rate": None,
-    "ollama_base_url": "http://localhost:11434",  # For Ollama Cloud, change to remote URL
-}
-
-# =========================================================================
-# OLLAMA/LLM SETTINGS
-# =========================================================================
-
-OLLAMA_OPTIONS = {
-    'keep_alive': '-1',
-    'num_thread': 4,
-    'temperature': 0.7,
-    'top_k': 40,
-    'top_p': 0.9
 }
 
 # =========================================================================
@@ -200,7 +188,6 @@ def choose_input_samplerate(device, preferred=None):
 CURRENT_CONFIG = load_config()
 TEXT_MODEL = CURRENT_CONFIG["text_model"]
 VISION_MODEL = CURRENT_CONFIG["vision_model"]
-OLLAMA_BASE_URL = CURRENT_CONFIG.get("ollama_base_url", DEFAULT_CONFIG["ollama_base_url"])
 
 INPUT_DEVICE_NAME = resolve_input_device(CURRENT_CONFIG)
 if INPUT_DEVICE_NAME is not None:
