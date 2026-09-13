@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 # Import tools
 from tools.games import launch_game, list_games, get_game_info
-from tools.system import get_time, search_web, capture_image
+from tools.system import get_time, search_web#, capture_image
 
 from config import BMO_SYSTEM_PROMPT, GROQ_API_KEY, TEXT_MODEL
 
@@ -105,10 +105,10 @@ def search_for_info(query: str) -> str:
     return search_web(query)
 
 
-@bmo_agent.tool_plain
-def take_picture(image_path: str = "current_image.jpg") -> str:
-    """Capture a photo with the camera. Use when user asks to take a picture or 'what do you see'."""
-    return capture_image(image_path)
+# @bmo_agent.tool_plain
+# def take_picture(image_path: str = "current_image.jpg") -> str:
+#     """Capture a photo with the camera. Use when user asks to take a picture or 'what do you see'."""
+#     return capture_image(image_path)
 
 
 # =========================================================================
@@ -128,7 +128,7 @@ async def run_bmo_async(user_input: str, deps: BMODeps) -> BMOResponse:
     """
     try:
         result = await bmo_agent.run(user_input, deps=deps)
-        return result.data
+        return result.output
     except Exception as e:
         logger.error(f"Agent error: {e}")
         return BMOResponse(

@@ -4,7 +4,7 @@
 # =========================================================================
 
 from .games import launch_game, list_games, get_game_info
-from .system import get_time, search_web, capture_image
+from .system import get_time, search_web #, capture_image
 
 __all__ = [
     "launch_game",
@@ -12,5 +12,5 @@ __all__ = [
     "get_game_info",
     "get_time",
     "search_web",
-    "capture_image",
+    # "capture_image",
 ]
