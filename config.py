@@ -7,8 +7,19 @@ import json
 import os
 import sounddevice as sd
 import warnings
+from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
+
+load_dotenv()
+
+# =========================================================================
+# SECRETS (loaded from .env)
+# =========================================================================
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file.")
 
 # =========================================================================
 # FILE PATHS
@@ -20,7 +31,6 @@ GAMES_LIST_FILE = "games.json"  # Custom games database
 BMO_IMAGE_FILE = "current_image.jpg"
 WAKE_WORD_MODEL = "./wakeword.onnx"
 RETROPIE_CONFIG_PATH = "/opt/retropie/configs"  # RetroPie config location
-GROQ_API_KEY = "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"
 
 # =========================================================================
 # WAKE WORD & AUDIO
